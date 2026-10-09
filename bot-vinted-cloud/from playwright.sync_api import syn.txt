@@ -1,0 +1,110 @@
+from playwright.sync_api import sync_playwright
+import time
+import requests
+
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1552631382935740498/QGDdoQYc2LrNBaFQCy3ar_Kq3zQpIMBORk6R8JIrMMfbIWEem34qDLx4DenvxEGNjfWA"
+
+SEARCHES = [
+    {
+        "nom": "Nike Tech",
+        "url": "https://www.vinted.fr/catalog?search_text=nike%20tech&price_to=100&order=newest_first"
+    },
+    {
+        "nom": "Nike Phenom Elite",
+        "url": "https://www.vinted.fr/catalog?search_text=nike%20phenom%20elite&price_to=100&order=newest_first"
+    }
+]
+
+derniers_ids = {}
+
+def envoyer_notification_discord(title, price, url, img_url, nom_recherche):
+    embed = {
+        "title": f"[{nom_recherche}] {title}",
+        "url": url,
+        "color": 58147,
+        "fields": [
+            {"name": "Prix", "value": price, "inline": True}
+        ]
+    }
+    if img_url:
+        embed["thumbnail"] = {"url": img_url}
+
+    data = {"username": "Vinted Bot", "embeds": [embed]}
+    try:
+        res = requests.post(DISCORD_WEBHOOK_URL, json=data)
+        if res.status_code in [200, 204]:
+            print(f"[Discord] Notification envoyée pour : {title}")
+        else:
+            print(f"[Discord] Code retour Discord : {res.status_code}")
+    except Exception as e:
+        print(f"[Discord] Erreur d'envoi : {e}")
+
+print("Bot Vinted prêt et en surveillance...")
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    context = browser.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        locale="fr-FR"
+    )
+    page = context.new_page()
+
+    print("[Session] Connexion initiale...")
+    page.goto("https://www.vinted.fr", wait_until="networkidle")
+
+    try:
+        cookie_btn = page.query_selector("#onetrust-accept-btn-handler")
+        if cookie_btn:
+            cookie_btn.click()
+            time.sleep(1)
+    except:
+        pass
+
+    while True:
+        for recherche in SEARCHES:
+            nom = recherche["nom"]
+            url = recherche["url"]
+
+            try:
+                page.goto(url, wait_until="domcontentloaded")
+                time.sleep(3)
+
+                items = page.query_selector_all("[data-testid*='grid-item'], div.feed-grid__item")
+
+                if items:
+                    first_item = items[0]
+                    link_elem = first_item.query_selector("a[href*='/items/']") or first_item.query_selector("a")
+                    
+                    if link_elem:
+                        item_url = link_elem.get_attribute("href") or ""
+                        if item_url and not item_url.startswith("http"):
+                            item_url = f"https://www.vinted.fr{item_url}"
+
+                        title_elem = first_item.query_selector("[data-testid*='title']") or link_elem
+                        price_elem = first_item.query_selector("[data-testid*='price']") or first_item.query_selector("p")
+                        img_elem = first_item.query_selector("img")
+
+                        title = title_elem.inner_text().strip() if title_elem else "Article Vinted"
+                        price = price_elem.inner_text().strip() if price_elem else "N/A"
+                        img_url = img_elem.get_attribute("src") if img_elem else ""
+
+                        item_id = item_url
+
+                        if nom not in derniers_ids:
+                            derniers_ids[nom] = item_id
+                            print(f"[{nom}] Initialisé avec : {title} ({price})")
+                        elif derniers_ids[nom] != item_id:
+                            print(f"[{nom}] Nouveau produit détecté ! Envoi...")
+                            envoyer_notification_discord(title, price, item_url, img_url, nom)
+                            derniers_ids[nom] = item_id
+                        else:
+                            print(f"[{nom}] Aucun nouvel article.")
+                    else:
+                        print(f"[{nom}] Lien d'article introuvable.")
+                else:
+                    print(f"[{nom}] Aucun article détecté dans la grille.")
+
+            except Exception as e:
+                print(f"Erreur pour {nom} : {e}")
+
+        time.sleep(30)
